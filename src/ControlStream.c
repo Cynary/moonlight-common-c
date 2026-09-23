@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "NativeController.h"
 
 // This is a private header, but it just contains some time macros
 #include <enet/time.h>
@@ -46,6 +47,7 @@ typedef struct _QUEUED_FRAME_FEC_STATUS {
 typedef struct _QUEUED_ASYNC_CALLBACK {
     int typeIndex;
     union {
+        uint8_t nativeController[LI_NATIVE_CONTROLLER_SIZE];
         struct {
             uint16_t controllerNumber;
             uint16_t lowFreqRumble;
@@ -909,6 +911,9 @@ static void asyncCallbackThreadFunc(void* context) {
 
     while (LbqWaitForQueueElement(&asyncCallbackQueue, (void**)&queuedCb) == LBQ_SUCCESS) {
         switch (queuedCb->typeIndex) {
+        case 0x55f0:
+            if (ListenerCallbacks.nativeController) ListenerCallbacks.nativeController(queuedCb->data.nativeController, LI_NATIVE_CONTROLLER_SIZE);
+            break;
         case IDX_RUMBLE_DATA:
             // Look for another rumble packet to batch with
             while (LbqPeekQueueElement(&asyncCallbackQueue, (void**)&nextCb) == LBQ_SUCCESS) {
@@ -1021,7 +1026,8 @@ static void asyncCallbackThreadFunc(void* context) {
 }
 
 static bool needsAsyncCallback(unsigned short packetType) {
-    return packetType == packetTypes[IDX_RUMBLE_DATA] ||
+    return (NativeControllerVersion == 1 && packetType == LI_NATIVE_CONTROLLER_CONTROL_TYPE) ||
+           packetType == packetTypes[IDX_RUMBLE_DATA] ||
            packetType == packetTypes[IDX_RUMBLE_TRIGGER_DATA] ||
            packetType == packetTypes[IDX_SET_MOTION_EVENT] ||
            packetType == packetTypes[IDX_SET_RGB_LED] ||
@@ -1043,7 +1049,16 @@ static void queueAsyncCallback(PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr, int packetLe
 
     BbInitializeWrappedBuffer(&bb, (char*)ctlHdr, sizeof(*ctlHdr), packetLength - sizeof(*ctlHdr), BYTE_ORDER_LITTLE);
 
-    if (ctlHdr->type == packetTypes[IDX_RUMBLE_DATA]) {
+    if (ctlHdr->type == LI_NATIVE_CONTROLLER_CONTROL_TYPE) {
+        const uint8_t* message = (const uint8_t*)(ctlHdr + 1);
+        if (packetLength != sizeof(*ctlHdr) + LI_NATIVE_CONTROLLER_SIZE ||
+            !LiNativeValidate(message, LI_NATIVE_CONTROLLER_SIZE, 1)) {
+            free(queuedCb); return;
+        }
+        memcpy(queuedCb->data.nativeController, message, LI_NATIVE_CONTROLLER_SIZE);
+        queuedCb->typeIndex = LI_NATIVE_CONTROLLER_CONTROL_TYPE;
+    }
+    else if (ctlHdr->type == packetTypes[IDX_RUMBLE_DATA]) {
         BbAdvanceBuffer(&bb, 4);
 
         BbGet16(&bb, &queuedCb->data.rumble.controllerNumber);

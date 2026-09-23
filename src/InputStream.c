@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "NativeController.h"
 
 static SOCKET inputSock = INVALID_SOCKET;
 static unsigned char currentAesIv[16];
@@ -57,6 +58,7 @@ typedef struct _PACKET_HOLDER {
     // sent to the host.
     union {
         NV_INPUT_HEADER header;
+        struct { NV_INPUT_HEADER header; uint8_t data[LI_NATIVE_CONTROLLER_SIZE]; } nativeController;
         NV_KEYBOARD_PACKET keyboard;
         NV_REL_MOUSE_MOVE_PACKET mouseMoveRel;
         NV_ABS_MOUSE_MOVE_PACKET mouseMoveAbs;
@@ -1634,5 +1636,23 @@ int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState,
         freePacketHolder(holder);
     }
 
+    return err;
+}
+
+int LiSendNativeControllerMessage(const uint8_t* message, unsigned int size) {
+    PPACKET_HOLDER holder; int err;
+    if (!initialized) return -2;
+    if (!IS_SUNSHINE() || !encryptedControlStream || NativeControllerVersion != 1)
+        return LI_ERR_UNSUPPORTED;
+    if (!LiNativeValidate(message, size, 0)) return -1;
+    holder = allocatePacketHolder(0);
+    if (!holder) return -1;
+    holder->channelId = CTRL_CHANNEL_GAMEPAD_BASE;
+    holder->enetPacketFlags = ENET_PACKET_FLAG_RELIABLE;
+    holder->packet.nativeController.header.size = BE32(sizeof(holder->packet.nativeController)-sizeof(uint32_t));
+    holder->packet.nativeController.header.magic = LE32(LI_NATIVE_CONTROLLER_INPUT_MAGIC);
+    memcpy(holder->packet.nativeController.data,message,size);
+    err = LbqOfferQueueItem(&packetQueue,holder,&holder->entry);
+    if (err != LBQ_SUCCESS) freePacketHolder(holder);
     return err;
 }
